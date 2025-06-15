@@ -48,7 +48,7 @@ def test_train_bpe():
             for merge_token_1, merge_token_2 in gpt2_reference_merges
         ]
     assert merges == reference_merges
-
+    print("Merges match the reference merges.")
     # Compare the vocab to the expected output vocab
     with open(reference_vocab_path) as f:
         gpt2_reference_vocab = json.load(f)
