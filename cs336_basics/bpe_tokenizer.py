@@ -1,4 +1,5 @@
 import os, regex as re, multiprocessing as mp
+from typing import Iterable, Iterator
 from collections import Counter, defaultdict
 from cs336_basics.pretokenization_example import find_chunk_boundaries
 import pathlib, pickle, statistics, binascii, random, time
@@ -8,7 +9,7 @@ PAT = re.compile(r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\
 
 
 # ---------- 多进程友好的预分词 ----------
-def pre_tokenization(chunk: str) -> Counter:
+def pre_tokenization(chunk: str) -> Counter[(tuple[bytes, ...])]:
     """把文本块 token 化，返回 Counter[(tuple[bytes, ...]) → 次数]。"""
     c = Counter()
     for m in re.finditer(PAT, chunk):
@@ -89,7 +90,7 @@ def merge(freqs, pairs, occ, vocabs, merges):
 
 
 # ---------- 训练入口 ----------
-def train_bpe(path: str, vocab_size: int, special):
+def train_bpe(path: str, vocab_size: int, special: list[str] | None=None):
     with open(path, "rb") as f:
         bounds = find_chunk_boundaries(f, os.cpu_count(), b"<|endoftext|>")
 
@@ -118,6 +119,68 @@ def train_bpe(path: str, vocab_size: int, special):
 
     return vocabs, merges
 
+
+class Tokenizer:
+    def __init__(self, vocab: dict[int, bytes], merges: list[tuple[bytes, bytes]], special_tokens: list[str] | None=None):
+        self.vocabs = vocab
+        self.vocabs_lookup = {v: k for k, v in vocab.items()}
+        self.merges = merges
+        self.vocab_size = len(vocab)
+        self.special_tokens = special_tokens or []
+        self.special_tokens.sort(key=len, reverse=True)
+        self.special_tokens_set = set(self.special_tokens)
+        self.esc = map(re.escape, self.special_tokens)
+        self.splitter = re.compile("({})".format("|".join(self.esc)))
+
+    def from_files(cls, vocab_filepath, merges_filepath, special_tokens=None):
+        with open(vocab_filepath, "rb") as f:
+            vocab = pickle.load(f)
+        with open(merges_filepath, "rb") as f:
+            merges = pickle.load(f)
+        return cls(vocab, merges, special_tokens)
+    
+    def _get_merged_tokens(
+        self, tokens: list[bytes]
+    ) -> list[int]:
+        result = tokens
+        for (first, second) in self.merges:
+            merged = []
+            i = 0
+            while i < len(result):
+                if i < len(result) - 1 and result[i] == first and result[i + 1] == second:
+                    merged.append(first + second)
+                    i += 2
+                else:
+                    merged.append(result[i])
+                    i += 1
+            result = merged
+        result = [self.vocabs_lookup.get(t, t) for t in result if t in self.vocabs_lookup]
+        return result
+
+    def encode(self, text: str) -> list[int]:
+        if self.special_tokens:
+            splits = re.split(self.splitter, text)
+        else:
+            splits = [text]
+        result = []
+        for word in splits:
+            if word in self.special_tokens_set:
+                result.append(self.vocabs_lookup.get(word.encode("utf-8"), -1))
+                continue
+            for m in re.finditer(PAT, word):
+                b = m.group().encode("utf-8")
+                tokens = [b[i : i + 1] for i in range(len(b))]
+                merged_tokens = self._get_merged_tokens(tokens)
+                result.extend(merged_tokens)
+        return result
+        
+    def decode(self, ids: list[int]) -> str:
+        tokens = [self.vocabs[i] for i in ids if i in self.vocabs]
+        return b"".join(tokens).decode("utf-8", "ignore")
+
+    def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
+        for text in iterable:
+            yield from self.encode(text)
 
 # ---------- example ----------
 if __name__ == "__main__":
@@ -179,3 +242,5 @@ if __name__ == "__main__":
     report_path.write_text("\n".join(lines), encoding="utf-8")
     print("\n".join(lines))
     print(f"✔️  报告已写入 {report_path.resolve()}")
+
+
