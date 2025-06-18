@@ -131,31 +131,31 @@ class Tokenizer:
         self.special_tokens_set = set(self.special_tokens)
         self.esc = map(re.escape, self.special_tokens)
         self.splitter = re.compile("({})".format("|".join(self.esc)))
+        self.merge_rank: dict[tuple[bytes, bytes], int] = {
+            pair: rank for rank, pair in enumerate(merges)
+        }
 
     def from_files(cls, vocab_filepath, merges_filepath, special_tokens=None):
         with open(vocab_filepath, "rb") as f:
             vocab = pickle.load(f)
         with open(merges_filepath, "rb") as f:
             merges = pickle.load(f)
-        return cls(vocab, merges, special_tokens)
+        return Tokenizer(vocab, merges, special_tokens)
     
     def _get_merged_tokens(
         self, tokens: list[bytes]
     ) -> list[int]:
-        result = tokens
-        for (first, second) in self.merges:
-            merged = []
-            i = 0
-            while i < len(result):
-                if i < len(result) - 1 and result[i] == first and result[i + 1] == second:
-                    merged.append(first + second)
-                    i += 2
-                else:
-                    merged.append(result[i])
-                    i += 1
-            result = merged
-        result = [self.vocabs_lookup.get(t, t) for t in result if t in self.vocabs_lookup]
-        return result
+        while True:
+            best_rank = None
+            best_idx = -1
+            for i in range(len(tokens)-1):
+                r = self.merge_rank.get((tokens[i], tokens[i+1]))
+                if r is not None and (best_rank is None or r < best_rank):
+                    best_rank, best_idx = r, i
+            if best_idx == -1:
+                break
+            tokens[best_idx:best_idx+2] = [tokens[best_idx] + tokens[best_idx+1]]
+        return [self.vocabs_lookup[t] for t in tokens]
 
     def encode(self, text: str) -> list[int]:
         if self.special_tokens:
