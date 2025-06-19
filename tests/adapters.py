@@ -151,7 +151,22 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    attn = MultiHeadSelfAttention(d_model, num_heads)
+    with torch.no_grad():
+        attn.W_q.copy_(q_proj_weight)
+        attn.W_k.copy_(k_proj_weight)
+        attn.W_v.copy_(v_proj_weight)
+        attn.W_o.copy_(o_proj_weight)
+
+    flat_shape = in_features.shape
+    batch_dims = flat_shape[:-2]
+    seq_len = flat_shape[-2]
+    d_in = flat_shape[-1]
+
+    out = attn(in_features)
+
+    return out
+
 
 
 def run_multihead_self_attention_with_rope(
@@ -191,7 +206,21 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    attn = MultiHeadSelfAttention(d_model, num_heads, with_rope=True, max_seq_len=max_seq_len, theta=theta, token_positions=token_positions)
+    with torch.no_grad():
+        attn.W_q.copy_(q_proj_weight)
+        attn.W_k.copy_(k_proj_weight)
+        attn.W_v.copy_(v_proj_weight)
+        attn.W_o.copy_(o_proj_weight)
+
+    flat_shape = in_features.shape
+    batch_dims = flat_shape[:-2]
+    seq_len = flat_shape[-2]
+    d_in = flat_shape[-1]
+
+    out = attn(in_features)
+
+    return out
 
 
 def run_rope(
@@ -287,7 +316,43 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
+    block = TransformerBlock(
+        d_model=d_model,
+        num_head=num_heads,
+        d_ff=d_ff,
+        max_seq_len=max_seq_len,
+        theta=theta
+    )
+    rename_map = {
+        "attn.q_proj.weight": "attn.W_q",
+        "attn.k_proj.weight": "attn.W_k",
+        "attn.v_proj.weight": "attn.W_v",
+        "attn.output_proj.weight": "attn.W_o",
+        "ln1.weight": "ln1.g",
+        "ln2.weight": "ln2.g",
+        "ffn.w1.weight": "ffn.W1",
+        "ffn.w2.weight": "ffn.W2",
+        "ffn.w3.weight": "ffn.W3",
+    }
+    sd = block.state_dict()
+
+    for ext_key, int_key in rename_map.items():
+        if ext_key not in weights:
+            raise KeyError(f"Missing expected weight '{ext_key}' in provided dict.")
+
+        w = weights[ext_key]
+
+        if sd[int_key].shape != w.shape:
+            raise ValueError(
+                f"Shape mismatch for {int_key}: "
+                f"expected {sd[int_key].shape}, got {tuple(w.shape)}"
+            )
+
+        sd[int_key].copy_(w)
+
+    return block(in_features)
+
+
 
 
 def run_transformer_lm(
@@ -369,7 +434,47 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     """
-    raise NotImplementedError
+    model = Transformer(
+            vocab_size=vocab_size,
+            context_length=context_length,
+            d_model=d_model,
+            num_layers=num_layers,
+            num_heads=num_heads,
+            d_ff=d_ff,
+            rope_theta=rope_theta,
+        )
+    sd = model.state_dict()
+    sd["token_embeddings.emb"].copy_(weights["token_embeddings.weight"])
+    for layer_idx in range(num_layers):
+        prefix_ref  = f"layers.{layer_idx}."
+        prefix_impl = f"layers.{layer_idx}."
+
+        mapping = {
+            f"{prefix_ref}attn.q_proj.weight": f"{prefix_impl}attn.W_q",
+            f"{prefix_ref}attn.k_proj.weight": f"{prefix_impl}attn.W_k",
+            f"{prefix_ref}attn.v_proj.weight": f"{prefix_impl}attn.W_v",
+            f"{prefix_ref}attn.output_proj.weight": f"{prefix_impl}attn.W_o",
+            f"{prefix_ref}ln1.weight": f"{prefix_impl}ln1.g",
+            f"{prefix_ref}ln2.weight": f"{prefix_impl}ln2.g",
+            f"{prefix_ref}ffn.w1.weight": f"{prefix_impl}ffn.W1",
+            f"{prefix_ref}ffn.w2.weight": f"{prefix_impl}ffn.W2",
+            f"{prefix_ref}ffn.w3.weight": f"{prefix_impl}ffn.W3",
+        }
+        for ext_key, int_key in mapping.items():
+            w = weights[ext_key]
+            assert sd[int_key].shape == w.shape, f"Shape mismatch on {int_key}"
+            sd[int_key].copy_(w)
+            sd["ln_final.g"].copy_(weights["ln_final.weight"])
+
+    if "lm_head.W" in sd and not sd["lm_head.W"].data_ptr() == sd["token_embeddings.emb"].data_ptr():
+        sd["lm_head.W"].copy_(weights["lm_head.weight"])
+
+    model.load_state_dict(sd, strict=True)
+    model.eval()
+    with torch.no_grad():
+        logits = model(in_indices)
+    return logits
+
 
 
 def run_rmsnorm(
@@ -410,7 +515,6 @@ def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
         Float[Tensor,"..."]: of with the same shape as `in_features` with the output of applying
         SiLU to each element.
     """
-    silu = SiLU()
     return silu(in_features)
 
 
