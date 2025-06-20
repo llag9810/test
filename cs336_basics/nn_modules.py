@@ -189,7 +189,7 @@ class MultiHeadSelfAttention(nn.Module):
         k = split_heads(k)
         v = split_heads(v)
         if self.rope:
-            token_positions = self.token_positions if self.token_positions else torch.arange(
+            token_positions = self.token_positions if self.token_positions is not None else torch.arange(
                 x.size(1), device=x.device)
             q, k = self.rope(q, token_positions), self.rope(k, token_positions)
         mask = ~torch.triu(torch.ones(

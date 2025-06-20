@@ -104,7 +104,7 @@ def train_bpe(path: str, vocab_size: int, special: list[str] | None=None):
             pieces.extend(splitter.split(chunk))
 
     # 多进程 token 计数
-    with mp.Pool(processes=2 * os.cpu_count()) as pool:
+    with mp.Pool(processes=os.cpu_count()) as pool:
         counters = pool.map(pre_tokenization, pieces)
 
     freqs = Counter()
